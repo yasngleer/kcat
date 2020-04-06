@@ -13,16 +13,15 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"regexp"
 	"strings"
-
 	"github.com/fatih/color"
 	"gopkg.in/yaml.v3"
+	"bufio"
 )
+
 
 func main() {
 	file := os.Args[1]
@@ -31,6 +30,22 @@ func main() {
 		panic(err)
 	}
 
+	//yaml file  to filetextlines
+	readFile, err := os.Open(file)
+	if err != nil {
+		panic(err)
+	}
+ 
+	fileScanner := bufio.NewScanner(readFile)
+	fileScanner.Split(bufio.ScanLines)
+	var fileTextLines []string
+
+	for fileScanner.Scan() {
+		fileTextLines = append(fileTextLines, fileScanner.Text())
+	}
+ 
+	readFile.Close()
+ 
 	// decode
 	var v yaml.Node
 	if err := yaml.Unmarshal(b, &v); err != nil {
@@ -44,72 +59,48 @@ func main() {
 	// TODO support multiple documents
 	content := v.Content[0]
 
-	colorizeKeys(content, "$root")
-	colorizeComments(content)
+	colorizeKeys(content, "$root", fileTextLines)
 
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	enc.Encode(content)
-	fmt.Print(render(buf))
-}
 
-func markComments(in string) string {
-	re := regexp.MustCompile(`(?m)^#(.*)`)
-	return re.ReplaceAllString(in, `#COMMENT_$1`)
-}
-
-func colorizeComments(node *yaml.Node) {
-	for _, child := range node.Content {
-		child.HeadComment = markComments(child.HeadComment)
-		child.LineComment = markComments(child.LineComment)
-		child.FootComment = markComments(child.FootComment)
-
-		colorizeComments(child)
+	for _,s := range fileTextLines{
+		fmt.Println(s)	
 	}
 }
 
-func render(buf bytes.Buffer) string {
-	s := buf.String()
 
-	// render keys
-
-	s = regexp.MustCompile(`(?m)(KEY_BLUE_)([^:]+)`).
-		ReplaceAllString(s, color.New(color.FgBlue, color.Bold).Sprint(`$2$3`))
-	s = regexp.MustCompile(`(?m)(KEY_YELLOW_)([^:]+)`).
-		ReplaceAllString(s, color.New(color.FgYellow, color.Bold).Sprint(`$2$3`))
-	s = regexp.MustCompile(`(?m)(KEY_RED_)([^:]+)`).
-		ReplaceAllString(s, color.New(color.FgRed, color.Bold).Sprint(`$2$3`))
-
-	// render comments
-	s = regexp.MustCompile(`(?m)#COMMENT_(.*)`).
-		ReplaceAllString(s, color.New(color.FgHiBlack).Sprint(`#$1`))
-
-	return s
-}
-
-func colorizeKeys(node *yaml.Node, path string) {
+func colorizeKeys(node *yaml.Node, path string,fileTextLines []string) {
 	var prevKey string
 	for i, child := range node.Content {
 		if node.Kind == yaml.SequenceNode && child.Kind == yaml.ScalarNode {
 			continue
 		}
-
 		if i%2 == 0 && child.Value != "" {
 			keyPath := path + "." + child.Value
 			prevKey = child.Value
-			child.Value = "KEY_" + colorForKey(keyPath) + "_" + child.Value
+			colorAttribute := colorForKey(keyPath)
+			if colorAttribute != color.FgBlack {
+				addcolor(fileTextLines,colorAttribute,child)
+			}
 		}
 
 		subPath := path
 		if node.Kind == yaml.MappingNode {
 			subPath = path + "." + prevKey
 		}
-		colorizeKeys(child, subPath)
+		colorizeKeys(child, subPath, fileTextLines)
 	}
 }
 
-func colorForKey(path string) string {
+
+func addcolor(fileTextLines []string,colorAttribute color.Attribute,child *yaml.Node){
+	mkcolor := color.New(colorAttribute, color.Bold).SprintFunc()
+	line := child.Line-1
+	start := child.Column-1
+	end := start+len(child.Value)
+	fileTextLines[line] = fileTextLines[line][0:start] + mkcolor(fileTextLines[line][start:end]) + fileTextLines[line][end:] 
+}
+
+func colorForKey(path string) color.Attribute {
 	redSuffixes := []string{"$root.apiVersion",
 		"$root.kind",
 		"$root.metadata",
@@ -118,16 +109,16 @@ func colorForKey(path string) string {
 		".containers.image"}
 	for _, f := range redSuffixes {
 		if strings.HasSuffix(path, f) {
-			return "RED"
+			return color.FgRed
 		}
 	}
 
 	if strings.HasPrefix(path, "$root.metadata") {
-		return "YELLOW"
+		return color.FgYellow
 	}
 
 	if strings.HasPrefix(path, "$root.spec") {
-		return "BLUE"
+		return color.FgBlue
 	}
-	return ""
+	return color.FgBlack
 }
